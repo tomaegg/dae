@@ -461,6 +461,7 @@ func NewControlPlane(
 		},
 		IpVersionPrefer: dnsConfig.IpVersionPrefer,
 		FixedDomainTtl:  fixedDomainTtl,
+		DialMode:        dialMode,
 	}); err != nil {
 		return nil, err
 	}

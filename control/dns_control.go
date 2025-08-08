@@ -59,6 +59,7 @@ type DnsControllerOption struct {
 	TimeoutExceedCallback func(dialArgument *dialArgument, err error)
 	IpVersionPrefer       int
 	FixedDomainTtl        map[string]int
+	DialMode              consts.DialMode
 }
 
 type DnsController struct {
@@ -81,6 +82,9 @@ type DnsController struct {
 	dnsCache            map[string]*DnsCache
 	dnsForwarderCacheMu sync.Mutex
 	dnsForwarderCache   map[dnsForwarderKey]DnsForwarder
+
+	// record dial mode for DNS ttl.
+	dialMode consts.DialMode
 }
 
 type handlingState struct {
@@ -124,6 +128,8 @@ func NewDnsController(routing *dns.Dns, option *DnsControllerOption) (c *DnsCont
 		dnsCache:            make(map[string]*DnsCache),
 		dnsForwarderCacheMu: sync.Mutex{},
 		dnsForwarderCache:   make(map[dnsForwarderKey]DnsForwarder),
+
+		dialMode: option.DialMode,
 	}, nil
 }
 
@@ -196,14 +202,22 @@ func (c *DnsController) NormalizeAndCacheDnsResp_(msg *dnsmessage.Msg) (err erro
 	}
 
 	// Get TTL.
-	var ttl uint32
-	for i := range msg.Answer {
-		if ttl == 0 {
-			ttl = msg.Answer[i].Header().Ttl
-			break
+	var ttl uint32 = math.MaxUint32
+	switch c.dialMode {
+	case consts.DialMode_Ip:
+		// NOTE: when dial mode is ip, choose the minimal ttl to use as cache ttl
+		for _, ans := range msg.Answer {
+			ttl = min(ttl, ans.Header().Ttl)
+		}
+	default:
+		for _, ans := range msg.Answer {
+			if ttl == math.MaxUint32 {
+				ttl = ans.Header().Ttl
+				break
+			}
 		}
 	}
-	if ttl == 0 {
+	if ttl == math.MaxUint32 {
 		// It seems no answers (NXDomain).
 		ttl = minFirefoxCacheTtl
 	}
@@ -220,10 +234,15 @@ func (c *DnsController) NormalizeAndCacheDnsResp_(msg *dnsmessage.Msg) (err erro
 	}
 
 	// Set ttl.
-	for i := range msg.Answer {
-		// Set TTL = zero. This requests applications must resend every request.
-		// However, it may be not defined in the standard.
-		msg.Answer[i].Header().Ttl = 0
+	switch c.dialMode {
+	case consts.DialMode_Ip:
+	// NOTE: when dial_mode is ip, no need to set ttl to zero
+	default:
+		for i := range msg.Answer {
+			// Set TTL = zero. This requests applications must resend every request.
+			// However, it may be not defined in the standard.
+			msg.Answer[i].Header().Ttl = 0
+		}
 	}
 
 	// Check if request A/AAAA record.
